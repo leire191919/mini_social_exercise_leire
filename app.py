@@ -6,7 +6,10 @@ import json
 import sqlite3
 import hashlib
 import re
+import pandas as pd
 from datetime import datetime
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
 
 app = Flask(__name__)
 app.secret_key = '123456789' 
@@ -889,10 +892,55 @@ def recommend(user_id, filter_following):
     - http://www.configworks.com/mz/handout_recsys_sac2010.pdf
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
+    #----------  STEP 1: EXTRACT THE CONTENT OF POSTS THAT THE USER LIKED--------------
+    liked_posts_content = query_db('SELECT p.content FROM posts AS p JOIN reactions AS r ' \
+    '                               ON p.id=r.post_id ' \
+    '                               WHERE r.user_id=? AND LOWER(r.reaction_type) IN ("like","love","laugh","wow")',     
+                                    (user_id,))
 
-    recommended_posts = {} 
+    if not liked_posts_content:
+        return []
+    
+    #----------- STEP 2: EXTRACT KEYWORDS FROM LIKED POSTS
+    # i am going to combine all post contents in one string
+    all_content = " ".join(content["content"] for content in liked_posts_content)
+    content_lower = all_content.lower()
+    content_all = re.findall(r'\b\w+\b', content_lower)
 
-    return recommended_posts;
+    keywords = []
+    for word in content_all:
+        if word not in ENGLISH_STOP_WORDS and len(word)>2:
+            keywords.append(word)
+    word_counts = collections.Counter(keywords)
+    top_keywords =  [word for word, _ in word_counts.most_common(10)]
+    if not top_keywords:
+        return []
+    
+    #------------ STEP 3: Obtain posts from users that follows----
+    if filter_following:
+        #FROM PEOPLE THEY FOLLOW
+        followed_posts = query_db('SELECT p.* FROM posts AS p JOIN follows AS f ON p.user_id=f.followed_id WHERE f.follower_id=?', (user_id,))
+    else:
+        #FROM EVERYONE
+        followed_posts = query_db('SELECT p.* FROM posts p',())
+    if not followed_posts:
+        return []
+    
+    #------------- STEP 4: Obtain the posts that contain those keywords, the recommended posts
+    #Avoid recommeding what he has already reacted to
+    liked_post_ids = {row['post_id'] for row in query_db( 'SELECT post_id FROM reactions WHERE user_id = ?', (user_id,) )}
+
+    recommended_posts = []
+    for post in followed_posts:
+        if post['id'] in liked_post_ids or post['user_id'] == user_id: 
+            continue
+        content_lower = post["content"].lower()
+        if any(keyword in content_lower for keyword in top_keywords):
+            recommended_posts.append(post)
+
+    recommended_posts.sort(key=lambda p: p['created_at'], reverse=True)
+
+    return recommended_posts[:5]
 
 # Task 3.2
 def user_risk_analysis(user_id):
@@ -910,8 +958,64 @@ def user_risk_analysis(user_id):
     """
     
     score = 0
+    user_data = query_db('SELECT * FROM users WHERE id = ?', (user_id,), one=True)
+    user =dict(user_data)
+    created_at = pd.to_datetime(user['created_at'])
+    account_age = (pd.Timestamp.now() - created_at).days
+    profile_score = 0
 
-    return score;
+    #-----------PROFILE SCORE--------------
+    if user['profile'] is not None:
+        profile_text = user['profile']
+        profile_score= moderate_content(profile_text)[1]
+    #-----------POST SCORE----------------
+    user_posts = query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))
+    post_score = 0
+    if len(user_posts) > 0:
+        for post in user_posts:
+            post_risk_score = moderate_content(post['content'])[1]
+            post_score += post_risk_score
+        average_post_score = post_score/ len(user_posts)
+    else:
+        average_post_score = 0
+    #-----------COMMENT SCORE--------------
+    user_comments = query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))
+    comment_score = 0
+    if len(user_comments):
+        for comment in user_comments:
+            comment_risk_score = moderate_content(comment['content'])[1]
+            comment_score += comment_risk_score
+        average_comment_score = comment_score/len(user_comments)
+    else:
+        average_comment_score =0
+    #------------ COMBINE SCORES----------------
+    content_risk_score = 0
+    content_risk_score = (profile_score * 1) + (average_post_score * 3) + (average_comment_score * 1)
+    #------------ AGE MULTIPLYER---------------
+    if account_age<7:
+        user_risk_score = content_risk_score * 1.5
+    if account_age<30:
+        user_risk_score = content_risk_score * 1.2
+    else:
+        user_risk_score = content_risk_score
+
+    #-----------MY RULE: POSTING FRECUENCY--------
+    post_num = len(user_posts)
+    average_post_per_day = 0
+    if account_age!=0:
+        average_post_per_day = post_num / account_age
+    if average_post_per_day>20:
+        user_risk_score = user_risk_score*1.15
+    if average_post_per_day>10:
+        user_risk_score = user_risk_score*1.05
+    else:
+        user_risk_score = user_risk_score
+
+    #------------ FINAL CAPPING--------
+    if user_risk_score>5:
+        return 5
+    else:
+        return user_risk_score
 
     
 # Task 3.3
@@ -931,10 +1035,53 @@ def moderate_content(content):
             password: admin
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
+    #--------------------STAGE 1.1----------------
+    #Rule 1.1.1
+    TIER1_PATTERN =  r'\b(' + '|'.join(TIER1_WORDS) + r')\b'
+    if re.search(TIER1_PATTERN, content, flags=re.IGNORECASE):
+        return("[content removed due to severe violation]",5)
 
+    #Rule 1.1.2
+    TIER2_PATTERN = '|'.join(TIER2_PHRASES)
+    if re.search(TIER2_PATTERN, content, flags=re.IGNORECASE):
+        return("[content removed due to spam/scam policy]",5)
+
+    #-------------------STAGE 1.2----------------------
     moderated_content = content
     score = 0
-    
+    #Rule 1.2.1
+    TIER3_PATTERN =  r'\b(' + '|'.join(TIER3_WORDS) + r')\b'
+    matches = re.findall(TIER3_PATTERN, content, flags=re.IGNORECASE)
+    # 2 points for each match as per rule 1.2.1
+    score = len(matches) * 2
+    # Using the same regex, we replace all words with *
+    moderated_content = re.sub(TIER3_PATTERN, lambda m: '*' * len(m.group(0)), moderated_content, flags=re.IGNORECASE)
+
+    #Rule 1.2.2
+    LINK_PATTERN = r"(https?://\S+|www\.\S+)"
+    link_matches = re.findall(LINK_PATTERN, moderated_content, flags = re.IGNORECASE)
+    score+= len(link_matches)*2
+    moderated_content = re.sub(LINK_PATTERN,"[link removed]",moderated_content, flags=re.IGNORECASE)
+
+    #Rule 1.2.3
+    letters = [l for l in moderated_content if l.isalpha()]
+    if len(letters)>15:
+        uppercase = sum(l.isupper() for l in letters) / len(letters)
+        if uppercase > 0.7:
+            score+= 0.5
+
+    #My rule: penalize when a character appears 3 or more times. 
+    #The penalization will vary depending on how many times a character is repeated
+    matches = re.findall(r'(.)\1{2,}', moderated_content)
+    for match in matches:
+        repetition = re.search(rf'({re.escape(match)})\1{{2,}}', moderated_content)
+        if len(repetition.group(0)) <= 5:
+            score+= 0.2
+        if len(repetition.group(0))<=8:
+            score+= 0.4
+        else:
+            score+=0.6
+
     return moderated_content, score
 
 
