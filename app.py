@@ -143,10 +143,20 @@ def feed():
         posts = recommend(current_user_id, show == 'following' and current_user_id)
     else:  # Default sort is 'new'
         query = f"""
-            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id
+            SELECT p.id, p.content, p.created_at, u.username, u.id as user_id, NULL AS quote_text, NULL AS original_author
             FROM posts p
             JOIN users u ON p.user_id = u.id
             {where_clause}
+
+            UNION ALL
+
+            SELECT r.id, orig.content, r.created_at, u.username, u.id as user_id,
+                   r.quote, orig_user.username AS original_author
+            FROM reposts AS r
+            JOIN posts orig ON r.original_post_id = orig.id
+            JOIN users u ON r.user_id = u.id
+            JOIN users orig_user ON orig.user_id = orig_user.id
+            {'' if not where_clause else where_clause.replace('p.','u.')} 
             ORDER BY p.created_at DESC
             LIMIT ? OFFSET ?
         """
@@ -233,8 +243,35 @@ def add_post():
 
     # Redirect back to the main feed to see the new post
     return redirect(url_for('feed'))
+#--------------- MY IMPLEMENTATION -------------------------    
+@app.route('/posts/<int:post_id>/repost',methods=['POST'])
+def repost(post_id):
+    """Handles reposting"""
+    user_id = session.get('user_id')
+    #block aces if user is not logged in
+    if not user_id:
+        flash('You must be logged in to repost.', 'danger')
+        return redirect(url_for('login'))
     
+    quote = request.form.get('quote','').strip()
+    db = get_db()
+    cur = db.cursor()
+
+    post_id = int(post_id)
+    cur.execute("SELECT id, user_id FROM posts WHERE id = ?",(post_id,))
+    original_post =cur.fetchone()
+    if not original_post:
+        flash("Original post not found","danger")
+        return redirect(url_for('feed'))
     
+    cur.execute("INSERT INTO reposts (user_id, original_post_id, quote) VALUES (?,?,?)",
+                 (user_id, post_id, quote if quote else None))
+    db.commit()
+    flash("Succesfully reposted!","success")
+    return redirect(url_for('feed'))
+
+
+
 @app.route('/posts/<int:post_id>/delete', methods=['POST'])
 def delete_post(post_id):
     """Handles deleting a post."""

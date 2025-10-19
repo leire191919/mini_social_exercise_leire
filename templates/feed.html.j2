@@ -75,8 +75,25 @@
         <small class="text-muted">{{ entry.post.created_at|datetimeformat }}</small>
         {% endif %}
       </div>
-      
-      <p class="mt-2">{{ entry.post.content }}</p>
+       <!-- My code -->
+    {% if entry.post.original_author %}
+        <div class="border rounded p-2 bg-light">
+          <small class="text-muted">@{{ entry.post.username }} reposted from @{{ entry.post.original_author }}</small><br>
+          <blockquote>{{ entry.post.content }}</blockquote>
+          {% if entry.post.quote_text %}
+            <p class="fst-italic">{{ entry.post.quote_text }}</p>
+          {% endif %}
+        </div>
+      {% else %}
+        <p class="mt-2">{{ entry.post.content }}</p>
+      {% endif %}
+      <!-- My code -->
+      {% if session.get('user_id') %}
+      <button class="btn btn-sm btn-secondary mb-2" data-bs-toggle="modal" data-bs-target="#repostModal-{{ entry.post.id }}">
+        Repost
+      </button>
+      {% endif %}
+      <!-- End of my code -->
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -162,7 +179,28 @@
       </div>
     </div>
   </div>
-  
+
+  <!-- my code  -->
+  <div class="modal fade" id="repostModal-{{ entry.post.id }}" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Repost</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form action="/posts/{{ entry.post.id }}/repost" method="POST">
+        <div class="modal-body">
+          <label class="form-label">Add a quote (optional)</label>
+          <textarea class="form-control" name="quote" rows="3" placeholder="Write something..."></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary">Repost</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
 
   <div class="modal fade" id="addCommentModal-{{ entry.post.id }}" tabindex="-1" aria-labelledby="addCommentModalLabel-{{ entry.post.id }}" aria-hidden="true">
     <div class="modal-dialog">
@@ -183,7 +221,25 @@
       </div>
     </div>
   </div>
-
+    <div class="modal fade" id="repostModal-{{ entry.post.id }}" tabindex="-1">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Repost</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <form action="/posts/{{ entry.post.id }}/repost" method="POST">
+          <div class="modal-body">
+            <label class="form-label">Add a quote (optional)</label>
+            <textarea class="form-control" name="quote_text" rows="3" placeholder="Write something..."></textarea>
+          </div>
+          <div class="modal-footer">
+            <button type="submit" class="btn btn-primary">Repost</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
   {% else %}
   <p class="text-center">No posts to display.</p>
   {% endfor %}
